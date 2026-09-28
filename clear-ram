@@ -1,0 +1,14 @@
+#!/bin/bash
+# Flush dirty pages, drop the page/dentry/inode caches, and compact memory.
+# Must run as root; the RAM widget invokes it through pkexec.
+set -e
+
+if [[ $EUID -ne 0 ]]; then
+  echo "clear-ram must run as root" >&2
+  exit 1
+fi
+
+sync
+echo 3 > /proc/sys/vm/drop_caches
+[[ -w /proc/sys/vm/compact_memory ]] && echo 1 > /proc/sys/vm/compact_memory
+exit 0

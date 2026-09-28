@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "pdnhan.ram",
+  "name": "RAM",
+  "version": "1.0.0",
+  "author": "pdnhan",
+  "description": "RAM usage pill with a popup to clear page cache",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "RAM",
+    "description": "RAM usage pill with a popup to clear page cache",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
