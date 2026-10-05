@@ -47,6 +47,12 @@ omarchy bar move pdnhan.ram --section right
 (`--section right` matches this widget's default placement; use `left` or
 `center` if you'd rather put it elsewhere.)
 
+## Uninstall
+
+```bash
+omarchy plugin remove pdnhan.ram
+```
+
 ## Interactions
 
 | Action | Result |
