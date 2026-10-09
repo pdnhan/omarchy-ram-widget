@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "id": "pdnhan.ram",
   "name": "RAM",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "pdnhan",
-  "description": "RAM usage pill with a popup to clear page cache",
+  "description": "RAM usage pill with a popup to clear page cache, show disk usage, and list cleanup candidates",
   "kinds": [
     "bar-widget"
   ],

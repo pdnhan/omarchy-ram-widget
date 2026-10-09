@@ -1,0 +1,70 @@
+#!/bin/bash
+# Report disk cleanup candidates. Read-only: nothing is ever deleted.
+# Output: one line per entry, tab-separated: <category>\t<bytes>\t<path>
+#   category "cache": a cache/temp location (sorted by size, biggest first)
+#   category "large": a large file under $HOME (sorted by size, biggest first)
+# Runs at idle CPU/IO priority and is bounded by timeouts; the RAM widget
+# invokes it in the background when "Scan" is clicked.
+
+# Be polite: lowest CPU and idle I/O priority for ourselves and children.
+renice -n 19 -p $$ >/dev/null 2>&1
+ionice -c3 -p $$ >/dev/null 2>&1
+
+HOME_DIR="${HOME:?}"
+CACHE_LIMIT=8
+LARGE_LIMIT=15
+LARGE_MIN="+500M"
+
+size_of() { # bytes used by a path (best effort, ignores unreadable parts)
+  timeout 30 du -sb --one-file-system -- "$1" 2>/dev/null | cut -f1
+}
+
+emit_cache() { # path
+  local p=$1 b
+  [[ -e $p ]] || return
+  b=$(size_of "$p")
+  [[ $b =~ ^[0-9]+$ && $b -gt 0 ]] && printf 'cache\t%s\t%s\n' "$b" "$p"
+}
+
+{
+  # Known cache/temp locations (only those that exist).
+  for p in \
+    "$HOME_DIR/.local/share/Trash" \
+    /var/cache/pacman/pkg \
+    "$HOME_DIR/.cache/yay" \
+    "$HOME_DIR/.cache/paru" \
+    "$HOME_DIR/.npm/_cacache" \
+    "$HOME_DIR/.cargo/registry" \
+    "$HOME_DIR/.cache/pip" \
+    /var/log/journal; do
+    emit_cache "$p"
+  done
+
+  # ~/.cache itself, plus its biggest subdirectories (skipping ones listed above).
+  emit_cache "$HOME_DIR/.cache"
+  if [[ -d $HOME_DIR/.cache ]]; then
+    nice -n 19 timeout 60 du -b --one-file-system --max-depth=1 -- "$HOME_DIR/.cache" 2>/dev/null |
+      awk -F'\t' -v root="$HOME_DIR/.cache" '$2 != root' |
+      sort -t$'\t' -k1,1nr |
+      awk -F'\t' '$2 !~ /\/\.cache\/(yay|paru|pip)$/' |
+      head -n "$CACHE_LIMIT" |
+      awk -F'\t' '$1 > 0 { printf "cache\t%s\t%s\n", $1, $2 }'
+  fi
+
+  # User-owned entries directly under /tmp.
+  if [[ -d /tmp ]]; then
+    total=0
+    while IFS= read -r -d '' e; do
+      b=$(size_of "$e")
+      [[ $b =~ ^[0-9]+$ ]] && total=$((total + b))
+    done < <(timeout 20 find /tmp -mindepth 1 -maxdepth 1 -user "$(id -u)" -print0 2>/dev/null)
+    ((total > 0)) && printf 'cache\t%s\t%s\n' "$total" /tmp
+  fi
+} | sort -t$'\t' -k1,1 -k2,2nr
+
+# Largest files in $HOME (single filesystem, Steam libraries excluded).
+timeout 90 nice -n 19 find "$HOME_DIR" -xdev \
+  \( -path "$HOME_DIR/.local/share/Steam" -o -path "$HOME_DIR/.steam" \) -prune -o \
+  -type f -size "$LARGE_MIN" -printf 'large\t%s\t%p\n' 2>/dev/null |
+  sort -t$'\t' -k2,2nr | head -n "$LARGE_LIMIT"
+exit 0

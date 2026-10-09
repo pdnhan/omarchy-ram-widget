@@ -26,12 +26,30 @@ bar, with a popup for details and quick actions.
   Ollama) is still keeping loaded. To free that memory, unload the model
   first (see above), then use Clear RAM if you also want to drop cached
   pages.
+  - A **DISK** section with total / used / free and a usage bar for the root
+    filesystem (and `/home` if it is a separate filesystem), refreshed every
+    minute and whenever the popup opens.
+  - A **Show cleanup candidates** button that runs the read-only `scan-disk`
+    helper in the background (at idle CPU/IO priority) and lists:
+    - **Cache / temp**: sizes of `~/.cache` and its biggest subdirectories,
+      `/tmp` (your files), `~/.local/share/Trash`, the pacman cache, yay/paru,
+      npm, cargo registry and pip caches, and the systemd journal — only those
+      that exist.
+    - **Large files**: the 15 largest files over 500 MB in `$HOME` (Steam
+      libraries excluded).
+
+    Nothing is ever deleted. **Click an entry** to open a terminal in that
+    directory (or in the file's parent directory).
 - **Right click** opens `btop` in a floating terminal.
 
 ## Requirements
 
 - [Omarchy](https://omarchy.org) with the Quickshell-based `omarchy-shell`
   bar (the one that supports `omarchy plugin add`).
+- `df`, `du`, `find`, `ionice` (coreutils / util-linux / findutils) for the
+  disk section and scan.
+- `xdg-terminal-exec` and `uwsm-app` (shipped with Omarchy) to open a terminal
+  from a cleanup candidate.
 - `curl` (used to query Ollama and to unload models).
 - `pkexec` / polkit (used to authorize the Clear RAM helper).
 - [Ollama](https://ollama.com) is optional — the OLLAMA section simply
@@ -57,7 +75,9 @@ omarchy plugin remove pdnhan.ram
 
 | Action | Result |
 | --- | --- |
-| Left click | Open the popup (usage breakdown, Ollama models, Clear RAM) |
+| Left click | Open the popup (usage breakdown, Ollama models, Clear RAM, disk usage) |
+| Click "Show cleanup candidates" | Scan for caches and large files (read-only), toggle the list |
+| Click a cleanup entry | Open a terminal in that directory (file: its parent) and close the popup |
 | Right click | Open `btop` |
 | Enter (while popup is focused) | Run Clear RAM |
 

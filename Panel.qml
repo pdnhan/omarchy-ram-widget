@@ -1,4 +1,5 @@
 import QtQuick
+import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
@@ -28,11 +29,21 @@ Panel {
   property bool ollamaReachable: false
   property string unloadingModel: ""
 
+  // Disk: one entry per distinct filesystem ("/" and, if separate, "/home").
+  property var disks: []
+  property bool scanning: false
+  property bool showCandidates: false
+  property bool scanned: false
+  property var cacheItems: []
+  property var largeItems: []
+
   readonly property real memUsed: Math.max(0, memTotal - memAvailable)
   readonly property real usedFraction: memTotal > 0 ? memUsed / memTotal : 0
   readonly property int usedPercent: Math.round(usedFraction * 100)
   readonly property real swapUsed: Math.max(0, swapTotal - swapFree)
   readonly property string helperPath: String(Qt.resolvedUrl("clear-ram")).replace(/^file:\/\//, "")
+  readonly property string scanPath: String(Qt.resolvedUrl("scan-disk")).replace(/^file:\/\//, "")
+  readonly property string homeDir: Quickshell.env("HOME") || ""
 
   // Switch to the theme's urgent color at 90%.
   readonly property color usageColor: {
@@ -43,6 +54,78 @@ Panel {
 
   function gb(kb) {
     return (kb / 1024 / 1024).toFixed(1) + " GB"
+  }
+
+  // 1536 -> "1.5 KB", up to TB. Input in bytes.
+  function bytesLabel(bytes) {
+    var units = ["B", "KB", "MB", "GB", "TB"]
+    var value = Number(bytes) || 0
+    var i = 0
+    while (value >= 1024 && i < units.length - 1) { value /= 1024; i++ }
+    return (i === 0 || value >= 100 ? Math.round(value) : value.toFixed(1)) + " " + units[i]
+  }
+
+  function tildePath(path) {
+    if (homeDir && (path === homeDir || path.indexOf(homeDir + "/") === 0)) return "~" + path.substring(homeDir.length)
+    return path
+  }
+
+  // Output of `df -B1 --output=source,size,used,avail,target`. Mounts that share
+  // a source with an earlier one (e.g. /home on the same partition) are skipped.
+  function parseDisks(raw) {
+    var lines = String(raw || "").split("\n").slice(1)
+    var seen = {}
+    var result = []
+    for (var i = 0; i < lines.length; i++) {
+      var m = lines[i].match(/^(\S+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/)
+      if (!m || seen[m[1]]) continue
+      seen[m[1]] = true
+      var size = parseFloat(m[2])
+      var used = parseFloat(m[3])
+      result.push({ mount: m[5], size: size, used: used, avail: parseFloat(m[4]),
+        fraction: size > 0 ? Math.min(1, used / size) : 0 })
+    }
+    disks = result
+  }
+
+  // Lines of `category<TAB>bytes<TAB>path` from scan-disk.
+  function parseScan(raw) {
+    var cache = []
+    var large = []
+    var lines = String(raw || "").split("\n")
+    for (var i = 0; i < lines.length; i++) {
+      var parts = lines[i].split("\t")
+      if (parts.length < 3) continue
+      var path = parts.slice(2).join("\t")
+      var item = { bytes: parseFloat(parts[1]), path: path, label: tildePath(path),
+        dir: parts[0] === "large" ? (path.replace(/\/[^\/]*$/, "") || "/") : path }
+      if (parts[0] === "cache") cache.push(item)
+      else if (parts[0] === "large") large.push(item)
+    }
+    cache.sort(function(a, b) { return b.bytes - a.bytes })
+    large.sort(function(a, b) { return b.bytes - a.bytes })
+    cacheItems = cache
+    largeItems = large
+    scanned = true
+    scanning = false
+  }
+
+  function scanDisk() {
+    if (scanning) return
+    scanning = true
+    scanProc.running = true
+  }
+
+  function toggleCandidates() {
+    showCandidates = !showCandidates
+    if (showCandidates && !scanned) scanDisk()
+  }
+
+  // Open a terminal in `dir`. Passed as argv (no shell string), so spaces and
+  // metacharacters in paths are safe.
+  function openInTerminal(dir) {
+    Util.execArgv(["setsid", "uwsm-app", "--", "xdg-terminal-exec", "--dir=" + dir])
+    close()
   }
 
   function parseMeminfo(raw) {
@@ -70,6 +153,10 @@ Panel {
   function refresh() {
     if (!memProc.running) memProc.running = true
     if (opened && !ollamaProc.running) ollamaProc.running = true
+  }
+
+  function refreshDisk() {
+    if (!diskProc.running) diskProc.running = true
   }
 
   function parseOllama(raw) {
@@ -113,8 +200,8 @@ Panel {
     clearProc.running = true
   }
 
-  Component.onCompleted: refresh()
-  onOpenedChanged: if (opened) { status = ""; refresh() }
+  Component.onCompleted: { refresh(); refreshDisk() }
+  onOpenedChanged: if (opened) { status = ""; refresh(); refreshDisk() }
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
@@ -123,6 +210,19 @@ Panel {
     id: memProc
     command: ["cat", "/proc/meminfo"]
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.parseMeminfo(text) }
+  }
+
+  Process {
+    id: diskProc
+    command: ["df", "-B1", "--output=source,size,used,avail,target", "/", "/home"]
+    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.parseDisks(text) }
+  }
+
+  Process {
+    id: scanProc
+    command: [root.scanPath]
+    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.parseScan(text) }
+    onExited: root.scanning = false
   }
 
   Process {
@@ -152,6 +252,8 @@ Panel {
       }
     }
   }
+
+  Timer { interval: 60000; running: true; repeat: true; onTriggered: root.refreshDisk() }
 
   Timer { interval: root.opened ? 1000 : 3000; running: true; repeat: true; onTriggered: root.refresh() }
 
@@ -365,6 +467,128 @@ Panel {
           }
         }
 
+        // ---------- Disk ----------
+        PanelSeparator {
+          foreground: root.bar.foreground
+        }
+
+        Column {
+          width: parent.width
+          spacing: Style.spacing.labelGap
+
+          PanelSectionHeader {
+            text: "DISK"
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+          }
+
+          Repeater {
+            model: root.disks
+            Column {
+              required property var modelData
+              width: parent.width
+              spacing: Style.spacing.labelGap
+
+              Item {
+                width: parent.width
+                implicitHeight: diskTitle.implicitHeight
+
+                InfoValue {
+                  id: diskTitle
+                  text: modelData.mount
+                  anchors.left: parent.left
+                }
+                InfoValue {
+                  text: root.bytesLabel(modelData.used) + " of " + root.bytesLabel(modelData.size) + " · " + Math.round(modelData.fraction * 100) + "%"
+                  color: modelData.fraction >= 0.9 ? root.bar.urgent : root.bar.foreground
+                  anchors.right: parent.right
+                }
+              }
+
+              Item {
+                width: parent.width
+                implicitHeight: Style.space(8)
+
+                Rectangle {
+                  id: diskTrack
+                  anchors.fill: parent
+                  radius: height / 2
+                  color: Qt.rgba(root.bar.foreground.r, root.bar.foreground.g, root.bar.foreground.b, 0.12)
+                }
+
+                Rectangle {
+                  anchors.left: diskTrack.left
+                  anchors.verticalCenter: diskTrack.verticalCenter
+                  height: diskTrack.height
+                  radius: diskTrack.radius
+                  color: modelData.fraction >= 0.9 ? root.bar.urgent : root.bar.foreground
+                  width: Math.max(diskTrack.height, diskTrack.width * modelData.fraction)
+
+                  Behavior on width { NumberAnimation { duration: 320; easing.type: Easing.OutCubic } }
+                }
+              }
+
+              InfoLabel {
+                text: "Free " + root.bytesLabel(modelData.avail)
+              }
+            }
+          }
+
+          Button {
+            width: parent.width
+            iconText: "󰋊"
+            iconSize: Style.font.body
+            text: root.scanning ? "Scanning…" : (root.showCandidates ? "Hide cleanup candidates" : "Show cleanup candidates")
+            fontSize: Style.font.bodySmall
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            bordered: true
+            tooltipText: "Find caches and large files that could be cleaned up (read-only)"
+            onClicked: root.toggleCandidates()
+          }
+
+          Column {
+            visible: root.showCandidates && !root.scanning && root.scanned
+            width: parent.width
+            spacing: Style.spacing.labelGap
+
+            PanelSectionHeader {
+              text: "CACHE / TEMP"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+            }
+            InfoLabel { visible: root.cacheItems.length === 0; text: "Nothing found" }
+            Repeater {
+              model: root.cacheItems
+              CandidateRow {}
+            }
+
+            PanelSectionHeader {
+              text: "LARGE FILES"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+            }
+            InfoLabel { visible: root.largeItems.length === 0; text: "No files over 500 MB" }
+            Repeater {
+              model: root.largeItems
+              CandidateRow {}
+            }
+
+            Button {
+              width: parent.width
+              iconText: "󰑐"
+              iconSize: Style.font.body
+              text: "Rescan"
+              fontSize: Style.font.bodySmall
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              bordered: true
+              tooltipText: "Run the scan again"
+              onClicked: root.scanDisk()
+            }
+          }
+        }
+
         PanelSeparator {
           foreground: root.bar.foreground
         }
@@ -385,6 +609,48 @@ Panel {
           onClicked: root.clearRam()
         }
       }
+    }
+  }
+
+  // One cleanup candidate: size + path; click opens its directory in a terminal.
+  component CandidateRow: Item {
+    required property var modelData
+
+    width: parent.width
+    implicitHeight: Math.max(rowPath.implicitHeight, rowSize.implicitHeight) + Style.space(6)
+
+    Rectangle {
+      anchors.fill: parent
+      radius: Style.space(4)
+      color: Qt.rgba(root.bar.foreground.r, root.bar.foreground.g, root.bar.foreground.b, 0.1)
+      visible: rowMouse.containsMouse
+    }
+
+    InfoValue {
+      id: rowSize
+      text: root.bytesLabel(modelData.bytes)
+      anchors.left: parent.left
+      anchors.leftMargin: Style.space(4)
+      anchors.verticalCenter: parent.verticalCenter
+      width: Style.space(60)
+    }
+
+    InfoLabel {
+      id: rowPath
+      text: modelData.label
+      elide: Text.ElideMiddle
+      anchors.left: rowSize.right
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(4)
+      anchors.verticalCenter: parent.verticalCenter
+    }
+
+    MouseArea {
+      id: rowMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: root.openInTerminal(modelData.dir)
     }
   }
 
